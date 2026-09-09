@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "go-gost/gost",
+    "branch": "master",
+    "commit": "36cc266257ec5a880ebe06bb741262f9a243d89b",
+    "observedAt": "2026-09-09T12:26:04.662Z",
+    "message": "chore: anchor gost gitignore rule to repo root"
+  },
+  "implementation": {
+    "repository": "go-gost/x",
+    "branch": "master",
+    "commit": "f70b114578999b44c56b48b78c6add3b2e1424f7",
+    "module": "v0.16.2-0.20260907094020-f70b11457899",
+    "observedAt": "2026-09-09T12:26:04.663Z",
+    "message": "plugin: manage external plugin subprocess lifecycle"
+  },
+  "integration": {
+    "configFormat": "gost-native-yaml",
+    "cliEntry": "gost -C <config>",
+    "apiPath": "/config",
+    "unknownFields": "preserve-in-raw-editor"
+  }
+}

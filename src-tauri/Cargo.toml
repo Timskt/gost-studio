@@ -1,0 +1,23 @@
+[package]
+name = "gost-studio"
+version = "0.1.0"
+description = "A calm, cross-platform desktop control plane for GOST"
+authors = ["Timskt"]
+edition = "2021"
+
+[lib]
+name = "gost_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
