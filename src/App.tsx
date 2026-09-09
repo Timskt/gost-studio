@@ -43,6 +43,7 @@ import { parseConfig, sampleConfig, serializeConfig, validateConfig } from './li
 import { chooseBinaryFile, chooseConfigFile, chooseSavePath, readTextFile, writeTextFile } from './lib/files'
 import { checkForUpdates } from './lib/updates'
 import { subscribeRuntimeLogs } from './lib/logs'
+import { fetchMetrics, type MetricsSnapshot } from './lib/metrics'
 import { getRuntimeState, isTauriRuntime, startGost, stopGost } from './lib/tauri'
 import type { ChainConfig, GostConfig, NodeConfig, RuntimeLog, RuntimeState, RuntimeUpdateState, ServiceConfig, ViewKey } from './types'
 import './styles.css'
@@ -99,6 +100,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [updateState, setUpdateState] = useState<RuntimeUpdateState>(initialUpdate)
   const [logs, setLogs] = useState<RuntimeLog[]>(initialLogs)
+  const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null)
   const [configPath, setConfigPath] = useState(() => window.localStorage.getItem('gost-studio.configPath') ?? 'gost.yml')
 
   useEffect(() => {
@@ -106,12 +108,32 @@ function App() {
   }, [configPath])
 
   useEffect(() => {
+    let active = true
     let unlisten: (() => void) | undefined
     subscribeRuntimeLogs((entry) => {
       setLogs((current) => [...current.slice(-999), entry])
-    }).then((dispose) => { unlisten = dispose })
-    return () => unlisten?.()
+    }).then((dispose) => {
+      if (active) unlisten = dispose
+      else dispose()
+    })
+    return () => {
+      active = false
+      unlisten?.()
+    }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    const refresh = () => fetchMetrics(config.metrics).then((snapshot) => {
+      if (active) setMetrics(snapshot)
+    })
+    refresh()
+    const timer = window.setInterval(refresh, 15_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [config.metrics.address, config.metrics.enabled, config.metrics.path])
 
   useEffect(() => {
     let cancelled = false
@@ -279,7 +301,7 @@ function App() {
         </header>
 
         <div className="content-wrap">
-          {view === 'overview' && <Overview config={config} runtime={runtime} onSelectView={selectView} onToggleRuntime={toggleRuntime} onNotice={showNotice} />}
+          {view === 'overview' && <Overview config={config} runtime={runtime} metrics={metrics} onSelectView={selectView} onToggleRuntime={toggleRuntime} onNotice={showNotice} />}
           {view === 'services' && <ServicesView config={config} expertMode={expertMode} onConfigChange={updateConfig} onToggleExpert={() => setExpertMode((current) => !current)} onSave={() => saveConfig()} onNotice={showNotice} />}
           {view === 'chains' && <ChainsView config={config} onConfigChange={updateConfig} onSave={() => saveConfig()} onNotice={showNotice} />}
           {view === 'routing' && <RoutingView config={config} onConfigChange={updateConfig} onNotice={showNotice} />}
@@ -301,9 +323,11 @@ function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string
   return <div className="page-header"><div><div className="page-eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{actions && <div className="page-actions">{actions}</div>}</div>
 }
 
-function Overview({ config, runtime, onSelectView, onToggleRuntime, onNotice }: { config: GostConfig; runtime: RuntimeState; onSelectView: (view: ViewKey) => void; onToggleRuntime: () => void; onNotice: (message: string) => void }) {
+function Overview({ config, runtime, metrics, onSelectView, onToggleRuntime, onNotice }: { config: GostConfig; runtime: RuntimeState; metrics: MetricsSnapshot | null; onSelectView: (view: ViewKey) => void; onToggleRuntime: () => void; onNotice: (message: string) => void }) {
   const runningServices = config.services.filter((service) => service.enabled).length
   const nodeCount = config.chains.reduce((total, chain) => total + chain.nodes.length, 0)
+  const activeServices = metrics?.available ? `${metrics.services}` : `${runningServices}/${config.services.length}`
+  const requestCount = metrics?.available ? metrics.requests.toLocaleString('en-US') : '1,248'
   return <>
     <PageHeader eyebrow="LOCAL WORKSPACE / DEFAULT" title="一眼看清，稳稳运行。" description="管理本地 GOST 实例、服务和转发路径。简单配置留给日常，底层能力随时可见。" actions={<><button className="button button--secondary" onClick={() => onSelectView('advanced')}><Code2 size={16} />打开原始配置</button><button className={`button ${runtime.status === 'running' ? 'button--danger' : 'button--primary'}`} onClick={onToggleRuntime}>{runtime.status === 'running' ? <><Square size={14} fill="currentColor" />停止实例</> : <><Play size={15} fill="currentColor" />启动实例</>}</button></>} />
 
@@ -314,9 +338,9 @@ function Overview({ config, runtime, onSelectView, onToggleRuntime, onNotice }: 
     </div>
 
     <div className="metric-grid">
-      <MetricCard label="活动服务" value={`${runningServices}/${config.services.length}`} detail="当前启用" icon={Server} tone="blue" />
+      <MetricCard label="活动服务" value={activeServices} detail={metrics?.available ? '来自 Prometheus' : '当前启用'} icon={Server} tone="blue" />
       <MetricCard label="转发节点" value={String(nodeCount)} detail="跨 2 条路径" icon={GitBranch} tone="violet" />
-      <MetricCard label="请求成功率" value="99.98%" detail="过去 24 小时" icon={Gauge} tone="green" />
+      <MetricCard label="请求总数" value={requestCount} detail={metrics?.available ? '当前 Metrics' : '演示数据'} icon={Gauge} tone="green" />
       <MetricCard label="传输流量" value="25.2 GB" detail="过去 24 小时" icon={ArrowUpRight} tone="amber" />
     </div>
 
@@ -348,7 +372,7 @@ function ServicesView({ config, expertMode, onConfigChange, onToggleExpert, onSa
   }
   function addService() {
     const name = `service-${config.services.length + 1}`
-    const service: ServiceConfig = { name, type: 'http', listener: 'tcp', address: ':8081', chain: 'direct', auth: false, enabled: false, requests: 0, traffic: '—', status: 'stopped' }
+    const service: ServiceConfig = { name, type: 'http', listener: 'tcp', address: ':8081', chain: 'direct', auth: false, authUsername: '', authPassword: '', enabled: false, requests: 0, traffic: '—', status: 'stopped' }
     onConfigChange({ ...config, services: [...config.services, service] })
     setSelectedName(name)
   }
@@ -360,7 +384,7 @@ function ServicesView({ config, expertMode, onConfigChange, onToggleExpert, onSa
 
   return <>
     <PageHeader eyebrow="CONFIGURATION / SERVICES" title="服务入口" description="把监听地址、协议和转发路径放在一起管理。常用选项保持克制，细节留给极客模式。" actions={<><button className="button button--secondary" onClick={() => onNotice('配置校验已通过')}><ShieldCheck size={16} />校验配置</button><button className="button button--primary" onClick={addService}><Plus size={16} />新建服务</button></>} />
-    <div className="editor-layout"><aside className="editor-sidebar panel"><div className="editor-sidebar-head"><div><span className="label-small">SERVICES</span><strong>{config.services.length} 个入口</strong></div><button className="icon-button" aria-label="添加服务" onClick={addService}><Plus size={16} /></button></div><div className="editor-list">{config.services.map((service) => <button key={service.name} className={`editor-list-item ${service.name === selected?.name ? 'editor-list-item--active' : ''}`} onClick={() => setSelectedName(service.name)}><span className={`list-type-dot list-type-dot--${service.type}`} /> <span className="list-item-copy"><strong>{service.name}</strong><small>{service.address}</small></span><span className={`list-live-dot ${service.enabled ? 'list-live-dot--on' : ''}`} /></button>)}</div><button className="add-list-button" onClick={addService}><Plus size={15} />添加服务</button></aside><section className="editor-main">{selected ? <><div className="editor-title-row"><div><div className="title-with-status"><h2>{selected.name}</h2><span className={`inline-status inline-status--${selected.status}`}><i />{selected.status === 'running' ? '运行中' : '已停止'}</span></div><p>服务 / {selected.type} / {selected.listener}</p></div><div className="title-actions"><button className="icon-button" aria-label="删除服务" onClick={removeService}><Trash2 size={16} /></button><button className="button button--secondary button--compact" onClick={onSave}><Save size={15} />保存</button></div></div><div className="form-section panel"><SectionHeading icon={Globe2} title="入口配置" description="定义 GOST 对外监听的协议和地址。" /><div className="form-grid form-grid--three"><Field label="服务名称"><input value={selected.name} onChange={(event) => { const name = event.target.value; updateService({ name }); setSelectedName(name) }} /></Field><SelectField label="处理器" value={selected.type} options={['http', 'socks5', 'tcp', 'udp', 'auto']} onChange={(value) => updateService({ type: value as ServiceConfig['type'] })} /><SelectField label="监听器" value={selected.listener} options={['tcp', 'udp', 'tls', 'ws', 'http2', 'quic']} onChange={(value) => updateService({ listener: value as ServiceConfig['listener'] })} /></div><div className="form-grid form-grid--three"><Field label="监听地址" hint="支持 :8080、127.0.0.1:1080"><input value={selected.address} onChange={(event) => updateService({ address: event.target.value })} /></Field><SelectField label="转发链" value={selected.chain} options={config.chains.map((chain) => chain.name)} onChange={(value) => updateService({ chain: value })} /><ToggleField label="启用身份认证" checked={selected.auth} onChange={(checked) => updateService({ auth: checked })} /></div></div><div className="form-section panel"><SectionHeading icon={GitBranch} title="转发路径" description="请求会沿着选定的链路到达目标地址。" /><div className="path-preview"><div className="path-node path-node--origin"><span>入口</span><strong>{selected.address}</strong></div><div className="path-line" /><div className="path-node"><span>转发链</span><strong>{selected.chain || '直连'}</strong></div><div className="path-line path-line--dashed" /><div className="path-node path-node--target"><span>目标</span><strong>按请求决定</strong></div></div></div>{expertMode && <div className="form-section panel expert-section"><SectionHeading icon={Zap} title="极客选项" description="这些设置直接映射到 GOST 的 metadata 和高级配置。" /><div className="form-grid form-grid--three"><Field label="重试次数"><input type="number" defaultValue={1} min={0} /></Field><Field label="空闲超时"><input defaultValue="30s" /></Field><Field label="网络命名空间"><input placeholder="留空表示默认" /></Field></div><div className="notice-box"><Info size={16} /><span>高级字段会原样保留到 YAML；如果不确定某个选项，请从官方文档或原始配置开始。</span></div></div>}</> : <EmptyState title="还没有服务" description="创建第一个 GOST 服务入口。" action={<button className="button button--primary" onClick={addService}><Plus size={15} />新建服务</button>} />}</section></div>
+    <div className="editor-layout"><aside className="editor-sidebar panel"><div className="editor-sidebar-head"><div><span className="label-small">SERVICES</span><strong>{config.services.length} 个入口</strong></div><button className="icon-button" aria-label="添加服务" onClick={addService}><Plus size={16} /></button></div><div className="editor-list">{config.services.map((service) => <button key={service.name} className={`editor-list-item ${service.name === selected?.name ? 'editor-list-item--active' : ''}`} onClick={() => setSelectedName(service.name)}><span className={`list-type-dot list-type-dot--${service.type}`} /> <span className="list-item-copy"><strong>{service.name}</strong><small>{service.address}</small></span><span className={`list-live-dot ${service.enabled ? 'list-live-dot--on' : ''}`} /></button>)}</div><button className="add-list-button" onClick={addService}><Plus size={15} />添加服务</button></aside><section className="editor-main">{selected ? <><div className="editor-title-row"><div><div className="title-with-status"><h2>{selected.name}</h2><span className={`inline-status inline-status--${selected.status}`}><i />{selected.status === 'running' ? '运行中' : '已停止'}</span></div><p>服务 / {selected.type} / {selected.listener}</p></div><div className="title-actions"><button className="icon-button" aria-label="删除服务" onClick={removeService}><Trash2 size={16} /></button><button className="button button--secondary button--compact" onClick={onSave}><Save size={15} />保存</button></div></div><div className="form-section panel"><SectionHeading icon={Globe2} title="入口配置" description="定义 GOST 对外监听的协议和地址。" /><div className="form-grid form-grid--three"><Field label="服务名称"><input value={selected.name} onChange={(event) => { const name = event.target.value; updateService({ name }); setSelectedName(name) }} /></Field><SelectField label="处理器" value={selected.type} options={['http', 'socks5', 'tcp', 'udp', 'auto']} onChange={(value) => updateService({ type: value as ServiceConfig['type'] })} /><SelectField label="监听器" value={selected.listener} options={['tcp', 'udp', 'tls', 'ws', 'http2', 'quic']} onChange={(value) => updateService({ listener: value as ServiceConfig['listener'] })} /></div><div className="form-grid form-grid--three"><Field label="监听地址" hint="支持 :8080、127.0.0.1:1080"><input value={selected.address} onChange={(event) => updateService({ address: event.target.value })} /></Field><SelectField label="转发链" value={selected.chain} options={config.chains.map((chain) => chain.name)} onChange={(value) => updateService({ chain: value })} /><ToggleField label="启用身份认证" checked={selected.auth} onChange={(checked) => updateService({ auth: checked })} /></div>{selected.auth && <div className="form-grid form-grid--three auth-fields"><Field label="用户名"><input value={selected.authUsername} onChange={(event) => updateService({ authUsername: event.target.value })} /></Field><Field label="密码"><input type="password" value={selected.authPassword} onChange={(event) => updateService({ authPassword: event.target.value })} /></Field></div>}</div><div className="form-section panel"><SectionHeading icon={GitBranch} title="转发路径" description="请求会沿着选定的链路到达目标地址。" /><div className="path-preview"><div className="path-node path-node--origin"><span>入口</span><strong>{selected.address}</strong></div><div className="path-line" /><div className="path-node"><span>转发链</span><strong>{selected.chain || '直连'}</strong></div><div className="path-line path-line--dashed" /><div className="path-node path-node--target"><span>目标</span><strong>按请求决定</strong></div></div></div>{expertMode && <div className="form-section panel expert-section"><SectionHeading icon={Zap} title="极客选项" description="这些设置直接映射到 GOST 的 metadata 和高级配置。" /><div className="form-grid form-grid--three"><Field label="重试次数"><input type="number" defaultValue={1} min={0} /></Field><Field label="空闲超时"><input defaultValue="30s" /></Field><Field label="网络命名空间"><input placeholder="留空表示默认" /></Field></div><div className="notice-box"><Info size={16} /><span>高级字段会原样保留到 YAML；如果不确定某个选项，请从官方文档或原始配置开始。</span></div></div>}</> : <EmptyState title="还没有服务" description="创建第一个 GOST 服务入口。" action={<button className="button button--primary" onClick={addService}><Plus size={15} />新建服务</button>} />}</section></div>
     <div className="editor-mode-bar"><div><span className="mode-indicator"><span />{expertMode ? '极客模式已开启' : '基础模式'}</span><span className="mode-description">{expertMode ? '显示 metadata、重试、超时等底层选项' : '保留最常用的服务配置'}</span></div><button className="toggle-mode" onClick={onToggleExpert}>{expertMode ? <ToggleRight size={22} /> : <ToggleLeft size={22} />}<span>{expertMode ? '关闭极客模式' : '开启极客模式'}</span></button></div>
   </>
 }

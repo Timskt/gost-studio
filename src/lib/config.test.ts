@@ -15,8 +15,9 @@ describe('GOST config adapter', () => {
   it('round-trips services and chains through native YAML', () => {
     const restored = parseConfig(serializeConfig(sampleConfig))
 
-    expect(restored.services.map((service) => service.name)).toEqual(['edge-http', 'private-socks', 'dns-forward'])
+    expect(restored.services.map((service) => service.name)).toEqual(['edge-http', 'private-socks'])
     expect(restored.services[1]?.chain).toBe('relay-east')
+    expect(restored.services[1]?.authUsername).toBe('user')
     expect(restored.chains[1]?.nodes[0]?.addr).toBe('198.51.100.12:443')
     expect(restored.metrics.enabled).toBe(true)
     expect(restored.bypasses[0]?.matchers).toContain('localhost')
@@ -38,8 +39,44 @@ experimental:
   featureFlag: true
 `)
 
-    expect(restored.raw).toEqual({ experimental: { featureFlag: true } })
+    expect(restored.raw?.experimental).toEqual({ featureFlag: true })
     expect(serializeConfig(restored)).toContain('featureFlag: true')
+    expect(serializeConfig(restored)).toContain('chains: []')
+  })
+
+  it('preserves unknown fields nested in edited services and nodes', () => {
+    const restored = parseConfig(`
+services:
+  - name: edge
+    addr: :8080
+    handler:
+      type: http
+      metadata:
+        futureOption: true
+    listener:
+      type: tcp
+      metadata:
+        platformHint: arm64
+chains:
+  - name: relay
+    hops:
+      - name: hop-0
+        selector:
+          strategy: round
+        nodes:
+          - name: node-0
+            addr: 127.0.0.1:8080
+            connector:
+              type: http
+              futureConnectorOption: true
+            dialer:
+              type: tcp
+`)
+
+    const yaml = serializeConfig(restored)
+    expect(yaml).toContain('futureOption: true')
+    expect(yaml).toContain('platformHint: arm64')
+    expect(yaml).toContain('futureConnectorOption: true')
   })
 
   it('reports duplicate services and missing chain references', () => {

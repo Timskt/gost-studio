@@ -12,6 +12,8 @@ export const sampleConfig: GostConfig = {
       address: ':8080',
       chain: 'direct',
       auth: false,
+      authUsername: '',
+      authPassword: '',
       enabled: true,
       requests: 1248,
       traffic: '18.4 GB',
@@ -24,6 +26,8 @@ export const sampleConfig: GostConfig = {
       address: '127.0.0.1:1080',
       chain: 'relay-east',
       auth: true,
+      authUsername: 'user',
+      authPassword: 'change-me',
       enabled: true,
       requests: 846,
       traffic: '6.8 GB',
@@ -36,6 +40,8 @@ export const sampleConfig: GostConfig = {
       address: ':5353',
       chain: 'relay-east',
       auth: false,
+      authUsername: '',
+      authPassword: '',
       enabled: false,
       requests: 0,
       traffic: '—',
@@ -122,14 +128,6 @@ export function parseConfig(source: string): GostConfig {
   const services = Array.isArray(parsed.services) ? parsed.services.map((service, index) => fromNativeService(service, index)) : []
   const chains = Array.isArray(parsed.chains) ? parsed.chains.map((chain, index) => fromNativeChain(chain, index)) : []
   const raw = { ...parsed }
-  delete raw.services
-  delete raw.chains
-  delete raw.log
-  delete raw.api
-  delete raw.metrics
-  delete raw.bypasses
-  delete raw.admissions
-  delete raw.resolvers
 
   const log = asRecord(parsed.log)
   const api = asRecord(parsed.api)
@@ -184,6 +182,9 @@ export function validateConfig(config: GostConfig): ValidationIssue[] {
     if (service.chain && !chainNames.has(service.chain)) {
       issues.push({ level: 'warning', path: `${path}.chain`, message: `引用的转发链不存在：${service.chain}` })
     }
+    if (service.auth && (!service.authUsername.trim() || !service.authPassword.trim())) {
+      issues.push({ level: 'error', path: `${path}.auth`, message: '已启用认证，但用户名或密码为空' })
+    }
   })
 
   config.chains.forEach((chain, index) => {
@@ -221,32 +222,54 @@ export function validateConfig(config: GostConfig): ValidationIssue[] {
 function toNativeConfig(config: GostConfig): NativeRecord {
   const native: NativeRecord = {
     ...(config.raw ?? {}),
-    services: config.services.map((service) => ({
-      name: service.name,
-      addr: service.address,
-      handler: {
+    services: config.services.filter((service) => service.enabled).map((service) => {
+      const original = findNamedRecord(config.raw?.services, service.name)
+      const originalHandler = asRecord(original.handler)
+      const originalListener = asRecord(original.listener)
+      const handler: NativeRecord = {
+        ...originalHandler,
         type: service.type,
         ...(service.chain ? { chain: service.chain } : {}),
-      },
-      listener: { type: service.listener },
-    })),
-    chains: config.chains.map((chain) => ({
-      name: chain.name,
-      hops: [{
-        name: `${chain.name}-hop-0`,
-        selector: { strategy: chain.strategy },
-        nodes: chain.nodes.map((node) => ({
-          name: node.name,
-          addr: node.addr,
-          connector: { type: node.connector },
-          dialer: { type: node.dialer },
-        })),
-      }],
-    })),
-    bypasses: config.bypasses.map((rule) => ({ name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
-    admissions: config.admissions.map((rule) => ({ name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
-    resolvers: config.resolvers.map((resolver) => ({ name: resolver.name, nameservers: resolver.nameservers.map((addr) => ({ addr })), prefer: resolver.prefer })),
-    log: config.log,
+      }
+      if (service.auth && service.authUsername && service.authPassword) {
+        handler.auth = { username: service.authUsername, password: service.authPassword }
+      } else {
+        delete handler.auth
+        delete handler.auther
+      }
+      return {
+        ...original,
+        name: service.name,
+        addr: service.address,
+        handler,
+        listener: { ...originalListener, type: service.listener },
+      }
+    }),
+    chains: config.chains.map((chain) => {
+      const original = findNamedRecord(config.raw?.chains, chain.name)
+      const originalHops = Array.isArray(original.hops) ? original.hops : []
+      const originalFirstHop = asRecord(originalHops[0])
+      const firstHop = {
+        ...originalFirstHop,
+        name: asString(originalFirstHop.name, `${chain.name}-hop-0`),
+        selector: { ...asRecord(originalFirstHop.selector), strategy: chain.strategy },
+        nodes: chain.nodes.map((node) => {
+          const originalNode = findNamedRecord(originalFirstHop.nodes, node.name)
+          return {
+            ...originalNode,
+            name: node.name,
+            addr: node.addr,
+            connector: { ...asRecord(originalNode.connector), type: node.connector },
+            dialer: { ...asRecord(originalNode.dialer), type: node.dialer },
+          }
+        }),
+      }
+      return { ...original, name: chain.name, hops: [firstHop, ...originalHops.slice(1)] }
+    }),
+    bypasses: config.bypasses.map((rule) => ({ ...findNamedRecord(config.raw?.bypasses, rule.name), name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
+    admissions: config.admissions.map((rule) => ({ ...findNamedRecord(config.raw?.admissions, rule.name), name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
+    resolvers: config.resolvers.map((resolver) => ({ ...findNamedRecord(config.raw?.resolvers, resolver.name), name: resolver.name, nameservers: resolver.nameservers.map((addr) => ({ addr })), prefer: resolver.prefer })),
+    log: { ...asRecord(config.raw?.log), ...config.log },
   }
 
   if (config.api.enabled) {
@@ -274,6 +297,8 @@ function fromNativeService(value: unknown, index: number): ServiceConfig {
     address: asString(service.addr, ':8080'),
     chain: asString(handler.chain, ''),
     auth: Boolean(handler.auth || handler.auther),
+    authUsername: asString(asRecord(handler.auth).username, ''),
+    authPassword: asString(asRecord(handler.auth).password, ''),
     enabled: true,
     requests: 0,
     traffic: '—',
@@ -305,6 +330,12 @@ function fromNativeChain(value: unknown, index: number): ChainConfig {
       }
     }),
   }
+}
+
+function findNamedRecord(value: unknown, name: string): NativeRecord {
+  if (!Array.isArray(value)) return {}
+  const found = value.find((item) => asRecord(item).name === name)
+  return asRecord(found)
 }
 
 function validateRules(issues: ValidationIssue[], rules: Array<{ name: string; matchers: string[] }>, section: string) {

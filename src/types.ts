@@ -28,6 +28,8 @@ export interface ServiceConfig {
   address: string
   chain: string
   auth: boolean
+  authUsername: string
+  authPassword: string
   enabled: boolean
   requests: number
   traffic: string
