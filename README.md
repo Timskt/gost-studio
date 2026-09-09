@@ -29,6 +29,7 @@ pnpm tauri:dev
 ```bash
 pnpm exec tsc -b --pretty false
 pnpm build
+pnpm test:e2e
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
@@ -69,6 +70,7 @@ docs/ARCHITECTURE.md         集成边界与更新策略
 pnpm exec tsc -b --pretty false
 pnpm test -- --run
 pnpm build
+pnpm test:e2e
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 

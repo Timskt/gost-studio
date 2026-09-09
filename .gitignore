@@ -8,3 +8,6 @@ src-tauri/gen/
 .env
 .env.*
 !.env.example
+
+test-results/
+playwright-report/

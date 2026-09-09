@@ -1,5 +1,5 @@
 import { parse, stringify } from 'yaml'
-import type { AdmissionRule, BypassRule, ChainConfig, GostConfig, NodeConfig, ResolverRule, ServiceConfig, ValidationIssue } from '../types'
+import type { AdmissionRule, AuthGroup, BypassRule, ChainConfig, GostConfig, HostGroup, LimiterRule, NodeConfig, RecorderRule, ResolverRule, ServiceConfig, ValidationIssue } from '../types'
 
 type NativeRecord = Record<string, unknown>
 
@@ -97,6 +97,18 @@ export const sampleConfig: GostConfig = {
   resolvers: [
     { name: 'system-dns', nameservers: ['udp://1.1.1.1:53'], prefer: 'ipv4' },
   ],
+  authers: [
+    { name: 'edge-users', users: [{ username: 'user', password: 'change-me' }] },
+  ],
+  hosts: [
+    { name: 'local-hosts', entries: [{ ip: '127.0.0.1', hostname: 'localhost', aliases: [] }] },
+  ],
+  limiters: [
+    { name: 'office-limit', limits: ['10MB'] },
+  ],
+  recorders: [
+    { name: 'audit-file', type: 'file', target: './logs/gost.log' },
+  ],
   log: {
     level: 'info',
     format: 'text',
@@ -140,6 +152,10 @@ export function parseConfig(source: string): GostConfig {
     bypasses: Array.isArray(parsed.bypasses) ? parsed.bypasses.map((value, index) => fromNativeRule<BypassRule>(value, index, 'bypass')) : [],
     admissions: Array.isArray(parsed.admissions) ? parsed.admissions.map((value, index) => fromNativeRule<AdmissionRule>(value, index, 'admission')) : [],
     resolvers: Array.isArray(parsed.resolvers) ? parsed.resolvers.map((value, index) => fromNativeResolver(value, index)) : [],
+    authers: Array.isArray(parsed.authers) ? parsed.authers.map((value, index) => fromNativeAuther(value, index)) : [],
+    hosts: Array.isArray(parsed.hosts) ? parsed.hosts.map((value, index) => fromNativeHosts(value, index)) : [],
+    limiters: Array.isArray(parsed.limiters) ? parsed.limiters.map((value, index) => fromNativeLimiter(value, index)) : [],
+    recorders: Array.isArray(parsed.recorders) ? parsed.recorders.map((value, index) => fromNativeRecorder(value, index)) : [],
     log: {
       level: asString(log.level, sampleConfig.log.level) as GostConfig['log']['level'],
       format: asString(log.format, sampleConfig.log.format) as GostConfig['log']['format'],
@@ -208,6 +224,10 @@ export function validateConfig(config: GostConfig): ValidationIssue[] {
     if (!resolver.name.trim()) issues.push({ level: 'error', path: `resolvers[${index}].name`, message: '解析器名称不能为空' })
     if (resolver.nameservers.length === 0) issues.push({ level: 'warning', path: `resolvers[${index}].nameservers`, message: '解析器没有配置 nameserver' })
   })
+  validateNamed(issues, config.authers, 'authers')
+  validateNamed(issues, config.hosts, 'hosts')
+  validateNamed(issues, config.limiters, 'limiters')
+  validateNamed(issues, config.recorders, 'recorders')
 
   if (config.api.enabled && !config.api.address.trim()) {
     issues.push({ level: 'error', path: 'api.address', message: 'API 已启用，但没有监听地址' })
@@ -269,6 +289,10 @@ function toNativeConfig(config: GostConfig): NativeRecord {
     bypasses: config.bypasses.map((rule) => ({ ...findNamedRecord(config.raw?.bypasses, rule.name), name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
     admissions: config.admissions.map((rule) => ({ ...findNamedRecord(config.raw?.admissions, rule.name), name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
     resolvers: config.resolvers.map((resolver) => ({ ...findNamedRecord(config.raw?.resolvers, resolver.name), name: resolver.name, nameservers: resolver.nameservers.map((addr) => ({ addr })), prefer: resolver.prefer })),
+    authers: config.authers.map((auther) => ({ ...findNamedRecord(config.raw?.authers, auther.name), name: auther.name, auths: auther.users })),
+    hosts: config.hosts.map((hosts) => ({ ...findNamedRecord(config.raw?.hosts, hosts.name), name: hosts.name, mappings: hosts.entries.map((entry) => ({ ip: entry.ip, hostname: entry.hostname, aliases: entry.aliases })) })),
+    limiters: config.limiters.map((limiter) => ({ ...findNamedRecord(config.raw?.limiters, limiter.name), name: limiter.name, limits: limiter.limits })),
+    recorders: config.recorders.map((recorder) => toNativeRecorder(recorder, findNamedRecord(config.raw?.recorders, recorder.name))),
     log: { ...asRecord(config.raw?.log), ...config.log },
   }
 
@@ -330,6 +354,46 @@ function fromNativeChain(value: unknown, index: number): ChainConfig {
       }
     }),
   }
+}
+
+function fromNativeAuther(value: unknown, index: number): AuthGroup {
+  const auther = asRecord(value)
+  const auths = Array.isArray(auther.auths) ? auther.auths.map((item) => asRecord(item)).map((item) => ({ username: asString(item.username, ''), password: asString(item.password, '') })) : []
+  return { name: asString(auther.name, `auther-${index + 1}`), users: auths }
+}
+
+function fromNativeHosts(value: unknown, index: number): HostGroup {
+  const hosts = asRecord(value)
+  const mappings = Array.isArray(hosts.mappings) ? hosts.mappings.map((item) => asRecord(item)).map((item) => ({ ip: asString(item.ip, ''), hostname: asString(item.hostname, ''), aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [] })) : []
+  return { name: asString(hosts.name, `hosts-${index + 1}`), entries: mappings }
+}
+
+function fromNativeLimiter(value: unknown, index: number): LimiterRule {
+  const limiter = asRecord(value)
+  return { name: asString(limiter.name, `limiter-${index + 1}`), limits: Array.isArray(limiter.limits) ? limiter.limits.filter((item): item is string => typeof item === 'string') : [] }
+}
+
+function fromNativeRecorder(value: unknown, index: number): RecorderRule {
+  const recorder = asRecord(value)
+  const type = (['file', 'tcp', 'http', 'redis'] as const).find((candidate) => recorder[candidate]) ?? 'file'
+  const backend = asRecord(recorder[type])
+  const target = type === 'file' ? asString(backend.path, '') : type === 'http' ? asString(backend.url, '') : asString(backend.addr, '')
+  return { name: asString(recorder.name, `recorder-${index + 1}`), type, target }
+}
+
+function toNativeRecorder(recorder: RecorderRule, original: NativeRecord): NativeRecord {
+  const backendKey = recorder.type
+  const backendField = recorder.type === 'file' ? 'path' : recorder.type === 'http' ? 'url' : 'addr'
+  return { ...original, name: recorder.name, [backendKey]: { ...asRecord(original[backendKey]), [backendField]: recorder.target } }
+}
+
+function validateNamed(issues: ValidationIssue[], values: Array<{ name: string }>, section: string) {
+  const names = new Set<string>()
+  values.forEach((value, index) => {
+    if (!value.name.trim()) issues.push({ level: 'error', path: `${section}[${index}].name`, message: '组件名称不能为空' })
+    if (names.has(value.name)) issues.push({ level: 'error', path: `${section}[${index}].name`, message: `组件名称重复：${value.name}` })
+    names.add(value.name)
+  })
 }
 
 function findNamedRecord(value: unknown, name: string): NativeRecord {

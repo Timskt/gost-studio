@@ -13,6 +13,7 @@ on:
         options:
           - all
           - frontend
+          - e2e
           - rust
 
 permissions:
@@ -57,3 +58,20 @@ jobs:
             librsvg2-dev \
             patchelf
       - run: cargo check --manifest-path src-tauri/Cargo.toml
+
+
+  e2e:
+    if: ${{ inputs.target == 'all' || inputs.target == 'e2e' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e

@@ -23,6 +23,10 @@ describe('GOST config adapter', () => {
     expect(restored.bypasses[0]?.matchers).toContain('localhost')
     expect(restored.admissions[0]?.whitelist).toBe(true)
     expect(restored.resolvers[0]?.nameservers[0]).toBe('udp://1.1.1.1:53')
+    expect(restored.authers[0]?.users[0]?.username).toBe('user')
+    expect(restored.hosts[0]?.entries[0]?.hostname).toBe('localhost')
+    expect(restored.limiters[0]?.limits[0]).toBe('10MB')
+    expect(restored.recorders[0]?.target).toBe('./logs/gost.log')
   })
 
   it('keeps root-level fields unknown to the friendly editor', () => {

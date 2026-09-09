@@ -1,4 +1,4 @@
-export type ViewKey = 'overview' | 'services' | 'chains' | 'routing' | 'advanced' | 'runtime' | 'logs'
+export type ViewKey = 'overview' | 'services' | 'chains' | 'routing' | 'components' | 'advanced' | 'runtime' | 'logs'
 
 export interface AuthConfig {
   username: string
@@ -12,6 +12,7 @@ export interface NodeConfig {
   dialer: string
   health: 'healthy' | 'degraded' | 'offline'
   latency: number
+  position?: { x: number; y: number }
 }
 
 export interface ChainConfig {
@@ -54,12 +55,37 @@ export interface ResolverRule {
   prefer: 'ipv4' | 'ipv6' | 'none'
 }
 
+export interface AuthGroup {
+  name: string
+  users: AuthConfig[]
+}
+
+export interface HostGroup {
+  name: string
+  entries: Array<{ ip: string; hostname: string; aliases: string[] }>
+}
+
+export interface LimiterRule {
+  name: string
+  limits: string[]
+}
+
+export interface RecorderRule {
+  name: string
+  type: 'file' | 'tcp' | 'http' | 'redis'
+  target: string
+}
+
 export interface GostConfig {
   services: ServiceConfig[]
   chains: ChainConfig[]
   bypasses: BypassRule[]
   admissions: AdmissionRule[]
   resolvers: ResolverRule[]
+  authers: AuthGroup[]
+  hosts: HostGroup[]
+  limiters: LimiterRule[]
+  recorders: RecorderRule[]
   log: {
     level: 'error' | 'warn' | 'info' | 'debug' | 'trace'
     format: 'text' | 'json'

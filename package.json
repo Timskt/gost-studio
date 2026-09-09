@@ -13,17 +13,20 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "sync:gost": "node scripts/update-gost.mjs"
+    "sync:gost": "node scripts/update-gost.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@xyflow/react": "^12.11.6",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "yaml": "^2.8.1",
-    "@tauri-apps/plugin-dialog": "^2.4.0"
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "^2.8.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

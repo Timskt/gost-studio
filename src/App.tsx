@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -18,7 +18,6 @@ import {
   HardDriveDownload,
   Info,
   Layers3,
-  LifeBuoy,
   Menu,
   Network,
   Play,
@@ -28,7 +27,6 @@ import {
   Save,
   Search,
   Server,
-  Settings2,
   ShieldCheck,
   Square,
   TerminalSquare,
@@ -39,16 +37,35 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import {
+  Background,
+  Controls,
+  Handle,
+  MarkerType,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  useNodesState,
+  useReactFlow,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type OnNodeDrag,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
 import { parseConfig, sampleConfig, serializeConfig, validateConfig } from './lib/config'
 import { chooseBinaryFile, chooseConfigFile, chooseSavePath, readTextFile, writeTextFile } from './lib/files'
 import { checkForUpdates } from './lib/updates'
 import { subscribeRuntimeLogs } from './lib/logs'
 import { fetchMetrics, type MetricsSnapshot } from './lib/metrics'
 import { getRuntimeState, isTauriRuntime, startGost, stopGost } from './lib/tauri'
-import type { ChainConfig, GostConfig, NodeConfig, RuntimeLog, RuntimeState, RuntimeUpdateState, ServiceConfig, ViewKey } from './types'
+import type { ChainConfig, GostConfig, NodeConfig, RuntimeLog, RuntimeState, RuntimeUpdateState, RecorderRule, ServiceConfig, ViewKey } from './types'
 import './styles.css'
 
-const viewLabels: Record<ViewKey, string> = { overview: '总览', services: '服务', chains: '转发链', routing: '路由与规则', advanced: '高级配置', runtime: '运行时', logs: '运行日志' }
+const viewLabels: Record<ViewKey, string> = { overview: '总览', services: '服务', chains: '转发链', routing: '路由与规则', components: '组件库', advanced: '高级配置', runtime: '运行时', logs: '运行日志' }
+
+const FLOW_NODE_START_X = 170
+const FLOW_NODE_GAP = 190
 
 const nodePresets: Array<{ id: string; label: string; description: string; connector: string; dialer: string; addr: string }> = [
   { id: 'direct', label: '直连节点', description: 'Direct over TCP', connector: 'direct', dialer: 'direct', addr: 'direct' },
@@ -62,6 +79,7 @@ const navItems: Array<{ id: ViewKey; label: string; icon: typeof Activity }> = [
   { id: 'services', label: '服务', icon: Server },
   { id: 'chains', label: '转发链', icon: GitBranch },
   { id: 'routing', label: '路由与规则', icon: Router },
+  { id: 'components', label: '组件库', icon: Boxes },
   { id: 'advanced', label: '高级配置', icon: Braces },
 ]
 
@@ -271,7 +289,7 @@ function App() {
         <div className="nav-section-label nav-section-label--spaced">工具</div>
         <nav className="primary-nav" aria-label="工具导航">
           <button className={`nav-item ${view === 'logs' ? 'nav-item--active' : ''}`} onClick={() => selectView('logs')}><TerminalSquare size={17} strokeWidth={1.9} /><span>运行日志</span><span className="nav-count">{logs.length}</span></button>
-          <button className={`nav-item ${view === 'runtime' ? 'nav-item--active' : ''}`} onClick={() => selectView('runtime')}><HardDriveDownload size={17} strokeWidth={1.9} /><span>运行时</span><span className="beta-label">BETA</span></button>
+          <button className={`nav-item ${view === 'runtime' ? 'nav-item--active' : ''}`} onClick={() => selectView('runtime')}><HardDriveDownload size={17} strokeWidth={1.9} /><span>运行时</span></button>
         </nav>
 
         <div className="sidebar-bottom">
@@ -280,7 +298,6 @@ function App() {
             <div className="sync-copy"><strong>跟进 upstream</strong><span>master · 已同步</span></div>
             <Check size={15} className="success-icon" />
           </div>
-          <button className="nav-item" onClick={() => showNotice('设置将在下一版开放')}><Settings2 size={17} strokeWidth={1.9} /><span>设置</span></button>
           <div className="profile-row"><div className="profile-avatar"><UserRound size={15} /></div><span>本地管理员</span><CircleHelp size={16} className="muted-icon profile-help" /></div>
         </div>
       </aside>
@@ -305,6 +322,7 @@ function App() {
           {view === 'services' && <ServicesView config={config} expertMode={expertMode} onConfigChange={updateConfig} onToggleExpert={() => setExpertMode((current) => !current)} onSave={() => saveConfig()} onNotice={showNotice} />}
           {view === 'chains' && <ChainsView config={config} onConfigChange={updateConfig} onSave={() => saveConfig()} onNotice={showNotice} />}
           {view === 'routing' && <RoutingView config={config} onConfigChange={updateConfig} onNotice={showNotice} />}
+          {view === 'components' && <ComponentsView config={config} onConfigChange={updateConfig} onSave={() => saveConfig()} onNotice={showNotice} />}
           {view === 'advanced' && <AdvancedView config={config} rawConfig={rawConfig} expertMode={expertMode} issues={issues} onRawChange={setRawConfig} onApply={applyRawConfig} onOpen={openConfig} onSave={() => saveConfig()} onToggleExpert={() => setExpertMode((current) => !current)} onNotice={showNotice} />}
           {view === 'logs' && <LogsView logs={logs} onClear={() => setLogs([])} onNotice={showNotice} />}
           {view === 'runtime' && <RuntimeView runtime={runtime} updateState={updateState} configPath={configPath} onConfigPathChange={setConfigPath} onBinaryPathChange={(binaryPath) => setRuntime((current) => ({ ...current, binaryPath }))} onChooseBinary={async () => { const path = await chooseBinaryFile(); if (path) setRuntime((current) => ({ ...current, binaryPath: path })) }} onChooseConfig={async () => { const path = await chooseConfigFile(); if (path) setConfigPath(path) }} onCheckUpdates={refreshUpdates} onToggleRuntime={toggleRuntime} onNotice={showNotice} />}
@@ -389,10 +407,17 @@ function ServicesView({ config, expertMode, onConfigChange, onToggleExpert, onSa
   </>
 }
 
+type FlowNodeData = {
+  kind: 'start' | 'end' | 'gost'
+  index?: number
+  node?: NodeConfig
+  title?: string
+}
+
+type GostFlowNode = Node<FlowNodeData>
+
 function ChainsView({ config, onConfigChange, onSave, onNotice }: { config: GostConfig; onConfigChange: (config: GostConfig) => void; onSave: () => void; onNotice: (message: string) => void }) {
   const [selectedName, setSelectedName] = useState(config.chains[0]?.name ?? '')
-  const [draggedNodeIndex, setDraggedNodeIndex] = useState<number | null>(null)
-  const [dropIndex, setDropIndex] = useState<number | null>(null)
   const selected = config.chains.find((chain) => chain.name === selectedName) ?? config.chains[0]
 
   function addChain() {
@@ -404,191 +429,212 @@ function ChainsView({ config, onConfigChange, onSave, onNotice }: { config: Gost
 
   function updateChain(patch: Partial<ChainConfig>) {
     if (!selected) return
-    onConfigChange({
-      ...config,
-      chains: config.chains.map((chain) => chain.name === selected.name ? { ...chain, ...patch } : chain),
-    })
-  }
-
-  function addNodeFromPreset(preset: typeof nodePresets[number], index = selected?.nodes.length ?? 0) {
-    if (!selected) return
-    const node: NodeConfig = {
-      name: `${preset.id}-${selected.nodes.length + 1}`,
-      addr: preset.addr,
-      connector: preset.connector,
-      dialer: preset.dialer,
-      health: 'healthy',
-      latency: 0,
-    }
-    const nodes = [...selected.nodes]
-    nodes.splice(index, 0, node)
-    updateChain({ nodes })
-  }
-
-  function addNode() {
-    const preset = nodePresets.find((candidate) => candidate.id === 'http-tls') ?? nodePresets[0]
-    addNodeFromPreset(preset)
-  }
-
-  function handleDrop(event?: React.DragEvent<HTMLDivElement>, index?: number) {
-    if (!selected) return
-    const presetId = event?.dataTransfer.getData('application/gost-node')
-    if (presetId) {
-      const preset = nodePresets.find((candidate) => candidate.id === presetId)
-      if (preset) addNodeFromPreset(preset, index ?? selected.nodes.length)
-      setDropIndex(null)
-      return
-    }
-    if (draggedNodeIndex !== null) {
-      const nodes = [...selected.nodes]
-      const [moved] = nodes.splice(draggedNodeIndex, 1)
-      const target = index ?? nodes.length
-      nodes.splice(Math.min(target, nodes.length), 0, moved)
-      updateChain({ nodes })
-    }
-    setDraggedNodeIndex(null)
-    setDropIndex(null)
-  }
-
-  function updateNode(index: number, patch: Partial<NodeConfig>) {
-    if (!selected) return
-    updateChain({ nodes: selected.nodes.map((node, nodeIndex) => nodeIndex === index ? { ...node, ...patch } : node) })
+    onConfigChange({ ...config, chains: config.chains.map((chain) => chain.name === selected.name ? { ...chain, ...patch } : chain) })
   }
 
   return (
     <>
-      <PageHeader
-        eyebrow="CONFIGURATION / CHAINS"
-        title="转发链"
-        description="把节点组织成清晰的路径。选择策略、健康状态和底层协议都在同一张图里。"
-        actions={
-          <>
-            <button className="button button--secondary" onClick={() => onNotice('节点探测已刷新')}>
-              <RotateCw size={15} />刷新探测
-            </button>
-            <button className="button button--secondary" onClick={onSave}>
-              <Save size={15} />保存配置
-            </button>
-            <button className="button button--primary" onClick={addChain}>
-              <Plus size={16} />新建转发链
-            </button>
-          </>
-        }
-      />
+      <PageHeader eyebrow="CONFIGURATION / CHAINS" title="转发链" description="把节点拖到画布上组成一条真实路径。横向顺序就是 GOST 的 hop 顺序，连接关系始终保持可读。" actions={<><button className="button button--secondary" onClick={() => onNotice('节点状态已刷新')}><RotateCw size={15} />刷新状态</button><button className="button button--secondary" onClick={onSave}><Save size={15} />保存配置</button><button className="button button--primary" onClick={addChain}><Plus size={16} />新建转发链</button></>} />
       <div className="chain-workbench">
         <aside className="chain-list panel">
-          <div className="editor-sidebar-head">
-            <div><span className="label-small">CHAINS</span><strong>{config.chains.length} 条路径</strong></div>
-            <button className="icon-button" aria-label="添加转发链" onClick={addChain}><Plus size={16} /></button>
-          </div>
-          {config.chains.map((chain) => (
-            <button key={chain.name} className={`chain-list-item ${chain.name === selected?.name ? 'chain-list-item--active' : ''}`} onClick={() => setSelectedName(chain.name)}>
-              <div className="chain-list-icon"><GitBranch size={15} /></div>
-              <div><strong>{chain.name}</strong><span>{chain.nodes.length} 个节点 · {chain.strategy}</span></div>
-              <span className={`list-live-dot ${chain.enabled ? 'list-live-dot--on' : ''}`} />
-            </button>
-          ))}
+          <div className="editor-sidebar-head"><div><span className="label-small">CHAINS</span><strong>{config.chains.length} 条路径</strong></div><button className="icon-button" aria-label="添加转发链" onClick={addChain}><Plus size={16} /></button></div>
+          {config.chains.map((chain) => <button key={chain.name} className={`chain-list-item ${chain.name === selected?.name ? 'chain-list-item--active' : ''}`} onClick={() => setSelectedName(chain.name)}><div className="chain-list-icon"><GitBranch size={15} /></div><div><strong>{chain.name}</strong><span>{chain.nodes.length} 个组件 · {chain.strategy}</span></div><span className={`list-live-dot ${chain.enabled ? 'list-live-dot--on' : ''}`} /></button>)}
           <button className="add-list-button" onClick={addChain}><Plus size={15} />添加转发链</button>
         </aside>
         <section className="chain-canvas panel">
-          {selected ? (
-            <>
-              <div className="chain-canvas-head">
-                <div>
-                  <div className="title-with-status">
-                    <h2>{selected.name}</h2>
-                    <span className={`chain-state ${selected.enabled ? 'chain-state--on' : ''}`}>{selected.enabled ? '启用' : '停用'}</span>
-                  </div>
-                  <p>节点按照选择策略组成一条实际转发路径。</p>
-                </div>
-                <ToggleField label="启用链路" checked={selected.enabled} onChange={(checked) => updateChain({ enabled: checked })} />
-              </div>
-              <div className="chain-diagram" onDragOver={(event) => event.preventDefault()} onDrop={(event) => handleDrop(event)}>
-                <div className="diagram-endpoint">
-                  <div className="endpoint-icon endpoint-icon--client"><Globe2 size={18} /></div>
-                  <span>客户端</span>
-                </div>
-                <div className="diagram-connector" />
-                {selected.nodes.length === 0 ? (
-                  <div className="diagram-empty">
-                    <GitBranch size={22} />
-                    <strong>这条链还没有节点</strong>
-                    <span>添加节点后，路径会在这里展开</span>
-                    <button className="button button--secondary button--compact" onClick={addNode}><Plus size={14} />添加第一个节点</button>
-                  </div>
-                ) : (
-                  <div className="diagram-nodes">
-                    {selected.nodes.map((node, index) => (
-                      <div className={`diagram-node-wrap ${dropIndex === index ? 'diagram-node-wrap--drop' : ''}`} key={node.name}>
-                        <div className="diagram-node" draggable onDragStart={() => setDraggedNodeIndex(index)} onDragEnd={() => { setDraggedNodeIndex(null); setDropIndex(null) }} onDragOver={(event) => { event.preventDefault(); setDropIndex(index) }} onDrop={(event) => { event.stopPropagation(); handleDrop(event, index) }}>
-                          <div className={`node-status node-status--${node.health}`} />
-                          <div className="node-card-copy">
-                            <strong>{node.name}</strong>
-                            <span>{node.addr}</span>
-                            <small>{node.dialer} → {node.connector} · {node.latency} ms</small>
-                          </div>
-                          <button className="node-edit-button" aria-label={`编辑 ${node.name}`} onClick={() => onNotice('节点编辑已展开')}><Settings2 size={14} /></button>
-                        </div>
-                        {index < selected.nodes.length - 1 && <div className="diagram-connector diagram-connector--node" />}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="diagram-connector" />
-                <div className="diagram-endpoint">
-                  <div className="endpoint-icon endpoint-icon--target"><ArrowUpRight size={18} /></div>
-                  <span>目标地址</span>
-                </div>
-              </div>
-              <div className="chain-settings">
-                <div className="chain-setting">
-                  <span>选择策略</span>
-                  <SelectField label="" value={selected.strategy} options={['round', 'random', 'fifo', 'hash']} onChange={(value) => updateChain({ strategy: value as ChainConfig['strategy'] })} />
-                </div>
-                <div className="chain-setting">
-                  <span>节点状态</span>
-                  <div className="setting-value">
-                    <i className="legend-dot legend-dot--green" />{selected.nodes.filter((node) => node.health === 'healthy').length} healthy
-                    <i className="legend-dot legend-dot--amber" />{selected.nodes.filter((node) => node.health === 'degraded').length} degraded
-                  </div>
-                </div>
-                <button className="button button--secondary button--compact" onClick={addNode}><Plus size={14} />添加节点</button>
-              </div>
-              <div className="node-table">
-                {selected.nodes.map((node, index) => (
-                  <div className="node-table-row" key={node.name}>
-                    <span className={`node-status node-status--${node.health}`} />
-                    <input value={node.name} aria-label="节点名称" onChange={(event) => updateNode(index, { name: event.target.value })} />
-                    <input value={node.addr} aria-label="节点地址" onChange={(event) => updateNode(index, { addr: event.target.value })} />
-                    <span className="node-protocol">{node.dialer} / {node.connector}</span>
-                    <span className="node-latency">{node.latency} ms</span>
-                    <button className="icon-button" aria-label="删除节点" onClick={() => updateChain({ nodes: selected.nodes.filter((candidate) => candidate.name !== node.name) })}><Trash2 size={14} /></button>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <EmptyState title="还没有转发链" description="创建一条路径，把服务与节点连接起来。" action={<button className="button button--primary" onClick={addChain}><Plus size={15} />新建转发链</button>} />
-          )}
+          {selected ? <>
+            <div className="chain-canvas-head"><div><div className="title-with-status"><h2>{selected.name}</h2><span className={`chain-state ${selected.enabled ? 'chain-state--on' : ''}`}>{selected.enabled ? '启用' : '停用'}</span></div><p>拖动节点调整顺序；点击节点右上角编辑实际参数。</p></div><ToggleField label="启用链路" checked={selected.enabled} onChange={(checked) => updateChain({ enabled: checked })} /></div>
+            <ReactFlowProvider><ChainFlowCanvas chain={selected} onChange={(patch) => updateChain(patch)} onNotice={onNotice} /></ReactFlowProvider>
+          </> : <EmptyState title="还没有转发链" description="创建一条路径，把服务与节点连接起来。" action={<button className="button button--primary" onClick={addChain}><Plus size={15} />新建转发链</button>} />}
         </section>
-        <aside className="component-palette panel">
-          <div className="palette-heading"><div><span className="label-small">COMPONENTS</span><strong>拖入一条路径</strong></div><Boxes size={17} className="violet-icon" /></div>
-          <p className="palette-intro">把组件拖到画布，或点击添加到当前链路末端。</p>
-          <div className="palette-list">
-            {nodePresets.map((preset) => (
-              <button key={preset.id} className="palette-item" draggable onDragStart={(event) => { event.dataTransfer.setData('application/gost-node', preset.id); setDraggedNodeIndex(null) }} onDragEnd={() => { setDropIndex(null); setDraggedNodeIndex(null) }} onClick={() => addNodeFromPreset(preset)}>
-                <span className={`palette-icon palette-icon--${preset.id}`}><Network size={14} /></span>
-                <span><strong>{preset.label}</strong><small>{preset.description}</small></span>
-                <Plus size={13} className="muted-icon" />
-              </button>
-            ))}
-          </div>
-          <div className="palette-drop-hint"><ArrowDownToLine size={15} /><span>拖到画布或两个节点之间</span></div>
-        </aside>
+        <ComponentPalette onAdd={(preset) => {
+          if (!selected) return
+          const node: NodeConfig = { name: `${preset.id}-${selected.nodes.length + 1}`, addr: preset.addr, connector: preset.connector, dialer: preset.dialer, health: 'healthy', latency: 0 }
+          updateChain({ nodes: [...selected.nodes, node] })
+        }} />
       </div>
     </>
   )
 }
+
+function ChainFlowCanvas({ chain, onChange, onNotice }: { chain: ChainConfig; onChange: (patch: Partial<ChainConfig>) => void; onNotice: (message: string) => void }) {
+  const reactFlow = useReactFlow()
+  const [isDropActive, setIsDropActive] = useState(false)
+  const [selectedNodeIndex, setSelectedNodeIndex] = useState<number | null>(null)
+  const selectedNode = selectedNodeIndex === null ? null : chain.nodes[selectedNodeIndex]
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      reactFlow.fitView({ padding: 0.16, duration: 180 })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [chain.nodes.length, reactFlow])
+
+  const flowBlueprint = useMemo<GostFlowNode[]>(() => {
+    const nodeItems: GostFlowNode[] = chain.nodes.map((node, index) => ({
+      id: `node-${index}`,
+      type: 'gost',
+      position: node.position ?? { x: FLOW_NODE_START_X + index * FLOW_NODE_GAP, y: 126 },
+      data: { kind: 'gost', index, node },
+      draggable: true,
+    }))
+    return [
+      { id: 'client', type: 'gost', position: { x: 22, y: 142 }, data: { kind: 'start', title: '客户端' }, draggable: false },
+      ...nodeItems,
+      { id: 'target', type: 'gost', position: { x: FLOW_NODE_START_X + chain.nodes.length * FLOW_NODE_GAP, y: 142 }, data: { kind: 'end', title: '目标地址' }, draggable: false },
+    ]
+  }, [chain.nodes])
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<GostFlowNode>(flowBlueprint)
+  useEffect(() => setFlowNodes(flowBlueprint), [flowBlueprint, setFlowNodes])
+
+  const flowEdges = useMemo<Edge[]>(() => {
+    const ids = ['client', ...chain.nodes.map((_, index) => `node-${index}`), 'target']
+    return ids.slice(0, -1).map((source, index) => ({ id: `${source}-${ids[index + 1]}`, source, target: ids[index + 1], type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: '#96a9a0' } }))
+  }, [chain.nodes])
+
+  const handleNodeDragStop = useCallback<OnNodeDrag>((_, node) => {
+    const data = node.data as FlowNodeData
+    if (data.kind !== 'gost' || data.index === undefined) return
+    const nodes = chain.nodes.map((candidate, index) => index === data.index ? { ...candidate, position: { x: node.position.x, y: node.position.y } } : candidate)
+    const ordered = nodes.map((candidate, index) => ({ candidate, index })).sort((a, b) => (a.candidate.position?.x ?? 0) - (b.candidate.position?.x ?? 0)).map(({ candidate }) => candidate)
+    onChange({ nodes: ordered })
+  }, [chain.nodes, onChange])
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const presetId = event.dataTransfer.getData('application/gost-node')
+    const preset = nodePresets.find((candidate) => candidate.id === presetId)
+    if (!preset) return
+    const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+    const node: NodeConfig = { name: `${preset.id}-${chain.nodes.length + 1}`, addr: preset.addr, connector: preset.connector, dialer: preset.dialer, health: 'healthy', latency: 0, position }
+    onChange({ nodes: [...chain.nodes, node] })
+    setIsDropActive(false)
+    onNotice(`${preset.label} 已加入 ${chain.name}`)
+  }
+
+  function moveSelected(delta: -1 | 1) {
+    if (selectedNodeIndex === null) return
+    const nextIndex = selectedNodeIndex + delta
+    if (nextIndex < 0 || nextIndex >= chain.nodes.length) return
+    const nodes = [...chain.nodes]
+    const [moved] = nodes.splice(selectedNodeIndex, 1)
+    nodes.splice(nextIndex, 0, moved)
+    onChange({ nodes })
+    setSelectedNodeIndex(nextIndex)
+  }
+
+  function updateSelected(patch: Partial<NodeConfig>) {
+    if (selectedNodeIndex === null) return
+    onChange({ nodes: chain.nodes.map((node, index) => index === selectedNodeIndex ? { ...node, ...patch } : node) })
+  }
+
+  return <>
+    <div className="flow-toolbar"><div className="flow-toolbar-copy"><span className="flow-help-icon"><Info size={14} /></span><span>拖动节点卡片改变顺序，拖入组件后自动接入路径。</span></div><div className="flow-toolbar-actions"><span className="flow-count">{chain.nodes.length} 个节点</span><button className="button button--secondary button--compact" onClick={() => onChange({ nodes: chain.nodes.map((node, index) => ({ ...node, position: { x: FLOW_NODE_START_X + index * FLOW_NODE_GAP, y: 126 } })) })}><Layers3 size={14} />自动排布</button></div></div>
+    <div className={`flow-editor ${isDropActive ? 'flow-editor--drop-active' : ''}`} onDragEnter={(event) => { if (event.dataTransfer.types.includes('application/gost-node')) setIsDropActive(true) }} onDragLeave={() => setIsDropActive(false)} onDragOverCapture={(event) => { event.preventDefault(); if (event.dataTransfer.types.includes('application/gost-node')) { event.dataTransfer.dropEffect = 'copy'; setIsDropActive(true) } }} onDropCapture={(event) => { setIsDropActive(false); handleDrop(event) }}>
+      {isDropActive && <div className="flow-drop-overlay"><ArrowDownToLine size={17} /><strong>松开以添加节点</strong><span>组件会接入当前转发链</span></div>}
+      <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={{ gost: GostFlowNode }} onNodesChange={onNodesChange} onNodeDragStop={handleNodeDragStop} onNodeClick={(_, node) => { const data = node.data as FlowNodeData; setSelectedNodeIndex(data.kind === 'gost' ? data.index ?? null : null) }} fitView fitViewOptions={{ padding: 0.16 }} minZoom={0.6} maxZoom={1.35} proOptions={{ hideAttribution: true }}>
+        <Background color="#e7e5dd" gap={24} size={1} />
+        <Controls showInteractive={false} />
+      </ReactFlow>
+      {chain.nodes.length === 0 && <div className="flow-drop-empty"><div className="flow-drop-icon"><ArrowDownToLine size={18} /></div><strong>从右侧拖入第一个组件</strong><span>或点击组件卡片直接添加</span></div>}
+    </div>
+    {selectedNode && <div className="node-inspector"><div className="node-inspector-head"><div><span className="label-small">SELECTED NODE</span><strong>{selectedNode.name}</strong></div><div className="node-inspector-actions"><button className="button button--secondary button--compact" onClick={() => moveSelected(-1)} disabled={selectedNodeIndex === 0}>向左</button><button className="button button--secondary button--compact" onClick={() => moveSelected(1)} disabled={selectedNodeIndex === chain.nodes.length - 1}>向右</button><button className="icon-button" aria-label="关闭节点检查器" onClick={() => setSelectedNodeIndex(null)}><X size={15} /></button></div></div><div className="node-inspector-grid"><Field label="节点名称"><input value={selectedNode.name} onChange={(event) => updateSelected({ name: event.target.value })} /></Field><Field label="地址"><input value={selectedNode.addr} onChange={(event) => updateSelected({ addr: event.target.value })} /></Field><Field label="Dialer"><input value={selectedNode.dialer} onChange={(event) => updateSelected({ dialer: event.target.value })} /></Field><Field label="Connector"><input value={selectedNode.connector} onChange={(event) => updateSelected({ connector: event.target.value })} /></Field></div></div>}
+  </>
+}
+
+function GostFlowNode({ data }: NodeProps<GostFlowNode>) {
+  if (data.kind === 'start') return <div className="flow-endpoint flow-endpoint--client"><div className="endpoint-icon endpoint-icon--client"><Globe2 size={17} /></div><strong>{data.title}</strong><Handle type="source" position={Position.Right} /></div>
+  if (data.kind === 'end') return <div className="flow-endpoint flow-endpoint--target"><Handle type="target" position={Position.Left} /><div className="endpoint-icon endpoint-icon--target"><ArrowUpRight size={17} /></div><strong>{data.title}</strong></div>
+  const node = data.node
+  if (!node) return null
+  return <div className="flow-node-card"><Handle type="target" position={Position.Left} /><Handle type="source" position={Position.Right} /><div className={`flow-node-status flow-node-status--${node.health}`} /><div className="flow-node-copy"><strong>{node.name}</strong><span>{node.addr}</span><small>{node.dialer} → {node.connector}</small></div><div className="flow-node-grip"><span /><span /><span /></div></div>
+}
+
+function ComponentPalette({ onAdd }: { onAdd: (preset: typeof nodePresets[number]) => void }) {
+  return <aside className="component-palette panel"><div className="palette-heading"><div><span className="label-small">COMPONENTS</span><strong>拖入路径</strong></div><Boxes size={17} className="violet-icon" /></div><p className="palette-intro">组件是 GOST 的一个 Node：Dialer 负责通道，Connector 负责协议。</p><div className="palette-list">{nodePresets.map((preset) => <button key={preset.id} className="palette-item" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/gost-node', preset.id) }} onClick={() => onAdd(preset)}><span className={`palette-icon palette-icon--${preset.id}`}><Network size={14} /></span><span><strong>{preset.label}</strong><small>{preset.description}</small></span><Plus size={13} className="muted-icon" /></button>)}</div><div className="palette-drop-hint"><ArrowDownToLine size={15} /><span>拖到画布，生成一个节点</span></div></aside>
+}
+
+type ComponentTab = 'authers' | 'hosts' | 'limiters' | 'recorders' | 'other'
+
+function ComponentsView({ config, onConfigChange, onSave, onNotice }: { config: GostConfig; onConfigChange: (config: GostConfig) => void; onSave: () => void; onNotice: (message: string) => void }) {
+  const [tab, setTab] = useState<ComponentTab>('authers')
+  const tabs: Array<{ id: ComponentTab; label: string; count: number; description: string }> = [
+    { id: 'authers', label: '认证器', count: config.authers.length, description: '用户与密码' },
+    { id: 'hosts', label: 'Hosts', count: config.hosts.length, description: '域名映射' },
+    { id: 'limiters', label: '限速器', count: config.limiters.length, description: '带宽限制' },
+    { id: 'recorders', label: '记录器', count: config.recorders.length, description: '流量记录' },
+    { id: 'other', label: '其他能力', count: countOtherComponents(config.raw), description: 'Ingress、插件、配额' },
+  ]
+
+  function addAuther() {
+    onConfigChange({ ...config, authers: [...config.authers, { name: `auther-${config.authers.length + 1}`, users: [{ username: 'user', password: '' }] }] })
+  }
+  function addHostGroup() {
+    onConfigChange({ ...config, hosts: [...config.hosts, { name: `hosts-${config.hosts.length + 1}`, entries: [{ ip: '127.0.0.1', hostname: 'localhost', aliases: [] }] }] })
+  }
+  function addLimiter() {
+    onConfigChange({ ...config, limiters: [...config.limiters, { name: `limiter-${config.limiters.length + 1}`, limits: ['10MB'] }] })
+  }
+  function addRecorder() {
+    onConfigChange({ ...config, recorders: [...config.recorders, { name: `recorder-${config.recorders.length + 1}`, type: 'file', target: './logs/gost.log' }] })
+  }
+
+  const add = tab === 'authers' ? addAuther : tab === 'hosts' ? addHostGroup : tab === 'limiters' ? addLimiter : tab === 'recorders' ? addRecorder : () => onNotice('其他能力请在高级配置中按 GOST 原生结构编辑')
+  const activeTab = tabs.find((item) => item.id === tab) ?? tabs[0]
+
+  return <>
+    <PageHeader eyebrow="CONFIGURATION / COMPONENTS" title="组件库" description="把 GOST 的可复用能力集中管理。每个组件都对应一个明确的配置对象，服务、转发链和高级 YAML 可以引用它们。" actions={<><button className="button button--secondary" onClick={onSave}><Save size={15} />保存配置</button><button className="button button--primary" onClick={add}><Plus size={16} />添加{activeTab.label}</button></>} />
+    <div className="component-layout">
+      <aside className="component-nav panel">{tabs.map((item) => <button key={item.id} className={`component-nav-item ${tab === item.id ? 'component-nav-item--active' : ''}`} onClick={() => setTab(item.id)}><div className="component-nav-icon"><Boxes size={15} /></div><span><strong>{item.label}</strong><small>{item.description}</small></span><b>{item.count}</b></button>)}</aside>
+      <section className="component-main panel">
+        {tab === 'authers' && <AuthersEditor config={config} onChange={onConfigChange} />}
+        {tab === 'hosts' && <HostsEditor config={config} onChange={onConfigChange} />}
+        {tab === 'limiters' && <LimitersEditor config={config} onChange={onConfigChange} />}
+        {tab === 'recorders' && <RecordersEditor config={config} onChange={onConfigChange} />}
+        {tab === 'other' && <OtherComponents raw={config.raw} onNotice={onNotice} />}
+      </section>
+    </div>
+  </>
+}
+
+function AuthersEditor({ config, onChange }: { config: GostConfig; onChange: (config: GostConfig) => void }) {
+  function updateGroup(index: number, patch: Partial<GostConfig['authers'][number]>) { onChange({ ...config, authers: config.authers.map((group, groupIndex) => groupIndex === index ? { ...group, ...patch } : group) }) }
+  function updateUser(groupIndex: number, userIndex: number, patch: Partial<GostConfig['authers'][number]['users'][number]>) { onChange({ ...config, authers: config.authers.map((group, index) => index === groupIndex ? { ...group, users: group.users.map((user, index) => index === userIndex ? { ...user, ...patch } : user) } : group) }) }
+  return <ComponentEditorIntro icon={UserRound} title="认证器" description="认证器可以被服务的 Handler/Listener 或节点的 Connector 引用。密码只写入本地配置文件。" empty={config.authers.length === 0} emptyLabel="添加一个认证器后，服务就可以启用 Basic Auth。">{config.authers.map((group, groupIndex) => <div className="component-card" key={`${group.name}-${groupIndex}`}><div className="component-card-head"><div className="component-card-title"><span className="component-card-index">{String(groupIndex + 1).padStart(2, '0')}</span><input value={group.name} aria-label="认证器名称" onChange={(event) => updateGroup(groupIndex, { name: event.target.value })} /></div><span className="component-card-meta">{group.users.length} 个用户</span></div><div className="user-table-head"><span>用户名</span><span>密码</span><span /></div>{group.users.map((user, userIndex) => <div className="user-row" key={`${user.username}-${userIndex}`}><input value={user.username} aria-label="用户名" onChange={(event) => updateUser(groupIndex, userIndex, { username: event.target.value })} /><input type="password" value={user.password} aria-label="密码" onChange={(event) => updateUser(groupIndex, userIndex, { password: event.target.value })} /><button className="icon-button" aria-label="删除用户" onClick={() => updateGroup(groupIndex, { users: group.users.filter((_, index) => index !== userIndex) })}><Trash2 size={13} /></button></div>)}<button className="add-inline-button" onClick={() => updateGroup(groupIndex, { users: [...group.users, { username: `user-${group.users.length + 1}`, password: '' }] })}><Plus size={13} />添加用户</button></div>)}</ComponentEditorIntro>
+}
+
+function HostsEditor({ config, onChange }: { config: GostConfig; onChange: (config: GostConfig) => void }) {
+  function updateGroup(index: number, patch: Partial<GostConfig['hosts'][number]>) { onChange({ ...config, hosts: config.hosts.map((group, groupIndex) => groupIndex === index ? { ...group, ...patch } : group) }) }
+  return <ComponentEditorIntro icon={Globe2} title="Hosts 映射" description="将主机名映射到固定 IP，服务和转发链可以通过 hosts 引用它。" empty={config.hosts.length === 0} emptyLabel="添加一个 Hosts 组后，可以在服务或节点中引用。">{config.hosts.map((group, groupIndex) => <div className="component-card" key={`${group.name}-${groupIndex}`}><div className="component-card-head"><div className="component-card-title"><span className="component-card-index">{String(groupIndex + 1).padStart(2, '0')}</span><input value={group.name} aria-label="Hosts 名称" onChange={(event) => updateGroup(groupIndex, { name: event.target.value })} /></div><span className="component-card-meta">{group.entries.length} 条映射</span></div><div className="hosts-table-head"><span>IP</span><span>Hostname</span><span>Aliases</span><span /></div>{group.entries.map((entry, entryIndex) => <div className="hosts-row" key={`${entry.hostname}-${entryIndex}`}><input value={entry.ip} aria-label="IP 地址" onChange={(event) => updateGroup(groupIndex, { entries: group.entries.map((candidate, index) => index === entryIndex ? { ...candidate, ip: event.target.value } : candidate) })} /><input value={entry.hostname} aria-label="Hostname" onChange={(event) => updateGroup(groupIndex, { entries: group.entries.map((candidate, index) => index === entryIndex ? { ...candidate, hostname: event.target.value } : candidate) })} /><input value={entry.aliases.join(', ')} aria-label="Aliases" onChange={(event) => updateGroup(groupIndex, { entries: group.entries.map((candidate, index) => index === entryIndex ? { ...candidate, aliases: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) } : candidate) })} /><button className="icon-button" aria-label="删除映射" onClick={() => updateGroup(groupIndex, { entries: group.entries.filter((_, index) => index !== entryIndex) })}><Trash2 size={13} /></button></div>)}<button className="add-inline-button" onClick={() => updateGroup(groupIndex, { entries: [...group.entries, { ip: '127.0.0.1', hostname: 'new.local', aliases: [] }] })}><Plus size={13} />添加映射</button></div>)}</ComponentEditorIntro>
+}
+
+function LimitersEditor({ config, onChange }: { config: GostConfig; onChange: (config: GostConfig) => void }) {
+  return <ComponentEditorIntro icon={Gauge} title="限速器" description="limits 使用 GOST 原生格式，例如 10MB、100Mbps；之后可以在服务上引用 limiter。" empty={config.limiters.length === 0} emptyLabel="添加限速器后，可以把带宽策略绑定到服务。"><div className="simple-component-list">{config.limiters.map((limiter, index) => <div className="simple-component-row" key={`${limiter.name}-${index}`}><div className="component-card-index">{String(index + 1).padStart(2, '0')}</div><input value={limiter.name} aria-label="限速器名称" onChange={(event) => onChange({ ...config, limiters: config.limiters.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, name: event.target.value } : candidate) })} /><input value={limiter.limits.join(', ')} aria-label="限速规则" onChange={(event) => onChange({ ...config, limiters: config.limiters.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, limits: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) } : candidate) })} /><button className="icon-button" aria-label="删除限速器" onClick={() => onChange({ ...config, limiters: config.limiters.filter((_, candidateIndex) => candidateIndex !== index) })}><Trash2 size={13} /></button></div>)}</div></ComponentEditorIntro>
+}
+
+function RecordersEditor({ config, onChange }: { config: GostConfig; onChange: (config: GostConfig) => void }) {
+  return <ComponentEditorIntro icon={HardDriveDownload} title="记录器" description="记录器把流量或事件写入文件、HTTP、TCP 或 Redis 后端。" empty={config.recorders.length === 0} emptyLabel="添加记录器后，可以在服务的 recorders 中引用。"><div className="simple-component-list">{config.recorders.map((recorder, index) => <div className="recorder-row" key={`${recorder.name}-${index}`}><div className="component-card-index">{String(index + 1).padStart(2, '0')}</div><input value={recorder.name} aria-label="记录器名称" onChange={(event) => onChange({ ...config, recorders: config.recorders.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, name: event.target.value } : candidate) })} /><select value={recorder.type} aria-label="记录器类型" onChange={(event) => onChange({ ...config, recorders: config.recorders.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, type: event.target.value as RecorderRule['type'] } : candidate) })}><option value="file">File</option><option value="http">HTTP</option><option value="tcp">TCP</option><option value="redis">Redis</option></select><input value={recorder.target} aria-label="记录器目标" onChange={(event) => onChange({ ...config, recorders: config.recorders.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, target: event.target.value } : candidate) })} /><button className="icon-button" aria-label="删除记录器" onClick={() => onChange({ ...config, recorders: config.recorders.filter((_, candidateIndex) => candidateIndex !== index) })}><Trash2 size={13} /></button></div>)}</div></ComponentEditorIntro>
+}
+
+function ComponentEditorIntro({ icon: Icon, title, description, empty, emptyLabel, children }: { icon: typeof Activity; title: string; description: string; empty: boolean; emptyLabel: string; children: React.ReactNode }) {
+  return <><div className="component-editor-header"><div className="section-heading"><div className="section-heading-icon"><Icon size={16} /></div><div><h2>{title}</h2><p>{description}</p></div></div></div>{empty ? <div className="component-empty"><div className="empty-state-icon"><Boxes size={20} /></div><strong>{emptyLabel}</strong><span>使用右上角按钮开始</span></div> : children}</>
+}
+
+function OtherComponents({ raw, onNotice }: { raw?: Record<string, unknown>; onNotice: (message: string) => void }) {
+  const modules = [
+    ['ingresses', 'Ingress', '按域名把入口映射到远端端点'],
+    ['routers', 'Router', '按目标地址选择 gateway'],
+    ['quotas', 'Quota', '累计流量额度与周期'],
+    ['caches', 'Cache', 'HTTP 缓存与过期策略'],
+    ['rewriters', 'Rewriter', '插件化请求/响应改写'],
+    ['observers', 'Observer', '服务状态和统计事件'],
+    ['sds', 'Service discovery', '注册、续期和发现服务'],
+  ] as const
+  return <><div className="component-editor-header"><div className="section-heading"><div className="section-heading-icon"><Zap size={16} /></div><div><h2>其他能力</h2><p>这些模块配置结构更依赖具体协议和部署环境，先提供清晰入口，详细字段留在高级 YAML。</p></div></div></div><div className="other-module-grid">{modules.map(([key, label, description]) => <button className="other-module-card" key={key} onClick={() => onNotice(`${label} 的完整编辑器将在下一阶段开放，请先使用高级配置`)}><div className="other-module-icon"><Network size={16} /></div><div><strong>{label}</strong><span>{description}</span></div><b>{countRaw(raw, key)}</b><ChevronRight size={15} className="muted-icon" /></button>)}</div><div className="notice-box notice-box--neutral"><Info size={16} /><span>当前版本已经可以保留和运行这些原生字段；当你需要精确控制 plugin、metadata 或协议专属参数时，使用高级配置不会被 UI 覆盖。</span></div></>
+}
+
+function countOtherComponents(raw?: Record<string, unknown>): number { return ['ingresses', 'routers', 'quotas', 'caches', 'rewriters', 'observers', 'sds'].reduce((total, key) => total + countRaw(raw, key), 0) }
+function countRaw(raw: Record<string, unknown> | undefined, key: string): number { return Array.isArray(raw?.[key]) ? (raw?.[key] as unknown[]).length : 0 }
 
 function RoutingView({ config, onConfigChange, onNotice }: { config: GostConfig; onConfigChange: (config: GostConfig) => void; onNotice: (message: string) => void }) {
   function updateBypass(index: number, patch: Partial<GostConfig['bypasses'][number]>) {
