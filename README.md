@@ -49,3 +49,39 @@ compatibility/gost.lock.json GOST / x 精确提交锁
 scripts/update-gost.mjs      upstream 提交同步脚本
 docs/ARCHITECTURE.md         集成边界与更新策略
 ```
+
+## 当前已开放的第二阶段能力
+
+- 配置文件打开、保存和浏览器模式导出
+- GOST 二进制与配置路径选择
+- GOST stdout/stderr 实时日志面板
+- GOST / x upstream 自动检查（本地缓存 6 小时）
+- 服务、Bypass、Admission、Resolver 的可视化编辑
+- 转发链组件库：可将 Direct、HTTP over TLS、SOCKS5、Relay over QUIC 拖入路径
+- 节点拖动排序与配置保存
+- 手动 CI/CD：避免每次本地提交都消耗 GitHub Actions 分钟
+
+## 阶段性 CI/CD
+
+本地迭代优先执行：
+
+```bash
+pnpm exec tsc -b --pretty false
+pnpm test -- --run
+pnpm build
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+达到阶段性成果后，再在 GitHub Actions 中手动运行：
+
+```text
+Actions → verify → Run workflow → target=all
+```
+
+需要检查 GOST upstream 时，手动运行：
+
+```text
+Actions → upstream compatibility check → Run workflow
+```
+
+仓库不会因每次 push 自动运行 CI，也不会每天定时消耗 Actions 配额。

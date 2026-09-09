@@ -1,15 +1,26 @@
 name: verify
 
+# Deliberately manual: local checks run on every development iteration and
+# GitHub Actions runs only at a reviewable milestone to conserve minutes.
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Verification target'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - frontend
+          - rust
 
 permissions:
   contents: read
 
 jobs:
   frontend:
+    if: ${{ inputs.target == 'all' || inputs.target == 'frontend' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +37,7 @@ jobs:
       - run: pnpm build
 
   rust:
+    if: ${{ inputs.target == 'all' || inputs.target == 'rust' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

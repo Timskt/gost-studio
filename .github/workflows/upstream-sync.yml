@@ -1,8 +1,8 @@
 name: upstream compatibility check
 
+# Deliberately manual. Run this when a milestone is ready for an upstream
+# compatibility review instead of spending Actions minutes every day.
 on:
-  schedule:
-    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
           commit-message: 'chore: refresh GOST upstream compatibility lock'
           title: 'chore: refresh GOST upstream compatibility lock'
           body: |
-            Automated compatibility lock refresh for `go-gost/gost` and `go-gost/x`.
+            Manual compatibility lock refresh for `go-gost/gost` and `go-gost/x`.
 
             Please review the upstream commits before merging and rebuild packaged runtimes as needed.
           branch: automation/gost-upstream-sync

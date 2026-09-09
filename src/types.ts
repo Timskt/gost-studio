@@ -1,4 +1,4 @@
-export type ViewKey = 'overview' | 'services' | 'chains' | 'routing' | 'advanced' | 'runtime'
+export type ViewKey = 'overview' | 'services' | 'chains' | 'routing' | 'advanced' | 'runtime' | 'logs'
 
 export interface AuthConfig {
   username: string
@@ -34,9 +34,30 @@ export interface ServiceConfig {
   status: 'running' | 'stopped' | 'warning'
 }
 
+export interface BypassRule {
+  name: string
+  whitelist: boolean
+  matchers: string[]
+}
+
+export interface AdmissionRule {
+  name: string
+  whitelist: boolean
+  matchers: string[]
+}
+
+export interface ResolverRule {
+  name: string
+  nameservers: string[]
+  prefer: 'ipv4' | 'ipv6' | 'none'
+}
+
 export interface GostConfig {
   services: ServiceConfig[]
   chains: ChainConfig[]
+  bypasses: BypassRule[]
+  admissions: AdmissionRule[]
+  resolvers: ResolverRule[]
   log: {
     level: 'error' | 'warn' | 'info' | 'debug' | 'trace'
     format: 'text' | 'json'
@@ -52,6 +73,26 @@ export interface GostConfig {
     path: string
   }
   raw?: Record<string, unknown>
+}
+
+export interface RuntimeLog {
+  stream: 'stdout' | 'stderr'
+  message: string
+  timestamp: string
+}
+
+export interface RuntimeUpdateState {
+  status: 'checking' | 'available' | 'up-to-date' | 'offline'
+  checkedAt: string
+  currentGostCommit: string
+  latestGostCommit: string
+  currentXCommit: string
+  latestXCommit: string
+  gostMessage?: string
+  xMessage?: string
+  studioRelease?: string
+  studioReleaseUrl?: string
+  error?: string
 }
 
 export interface RuntimeState {

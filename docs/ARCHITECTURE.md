@@ -42,3 +42,17 @@ The Tauri shell owns process lifecycle and platform concerns:
 - later: locate binaries, choose config files, stream logs, and manage upgrades.
 
 The React layer owns presentation, config editing, validation, and a browser-safe fallback for UI development.
+
+## Update checking
+
+The desktop client checks upstream commits at startup and caches the result for six hours. It compares the current lock against:
+
+- `go-gost/gost` `master`;
+- `go-gost/x` `master`;
+- the latest `gost-studio` release when one exists.
+
+The check is informational. It does not replace a running binary or modify the lock automatically. Upgrades remain a deliberate, reviewable action.
+
+## CI/CD budget policy
+
+GitHub Actions is manual by default in this repository. Local verification is the normal inner loop. When a milestone is ready, run `verify` with `target=all`; when an upstream review is desired, run `upstream compatibility check`. This keeps ordinary UI iteration off the Actions bill while preserving repeatable release checks.

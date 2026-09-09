@@ -1,5 +1,5 @@
 import { parse, stringify } from 'yaml'
-import type { ChainConfig, GostConfig, NodeConfig, ServiceConfig, ValidationIssue } from '../types'
+import type { AdmissionRule, BypassRule, ChainConfig, GostConfig, NodeConfig, ResolverRule, ServiceConfig, ValidationIssue } from '../types'
 
 type NativeRecord = Record<string, unknown>
 
@@ -82,6 +82,15 @@ export const sampleConfig: GostConfig = {
       ],
     },
   ],
+  bypasses: [
+    { name: 'private-direct', whitelist: false, matchers: ['localhost', '127.0.0.1', '192.168.0.0/16'] },
+  ],
+  admissions: [
+    { name: 'local-only', whitelist: true, matchers: ['127.0.0.1', '::1'] },
+  ],
+  resolvers: [
+    { name: 'system-dns', nameservers: ['udp://1.1.1.1:53'], prefer: 'ipv4' },
+  ],
   log: {
     level: 'info',
     format: 'text',
@@ -118,6 +127,9 @@ export function parseConfig(source: string): GostConfig {
   delete raw.log
   delete raw.api
   delete raw.metrics
+  delete raw.bypasses
+  delete raw.admissions
+  delete raw.resolvers
 
   const log = asRecord(parsed.log)
   const api = asRecord(parsed.api)
@@ -127,6 +139,9 @@ export function parseConfig(source: string): GostConfig {
     ...sampleConfig,
     services,
     chains,
+    bypasses: Array.isArray(parsed.bypasses) ? parsed.bypasses.map((value, index) => fromNativeRule<BypassRule>(value, index, 'bypass')) : [],
+    admissions: Array.isArray(parsed.admissions) ? parsed.admissions.map((value, index) => fromNativeRule<AdmissionRule>(value, index, 'admission')) : [],
+    resolvers: Array.isArray(parsed.resolvers) ? parsed.resolvers.map((value, index) => fromNativeResolver(value, index)) : [],
     log: {
       level: asString(log.level, sampleConfig.log.level) as GostConfig['log']['level'],
       format: asString(log.format, sampleConfig.log.format) as GostConfig['log']['format'],
@@ -186,6 +201,13 @@ export function validateConfig(config: GostConfig): ValidationIssue[] {
     })
   })
 
+  validateRules(issues, config.bypasses, 'bypasses')
+  validateRules(issues, config.admissions, 'admissions')
+  config.resolvers.forEach((resolver, index) => {
+    if (!resolver.name.trim()) issues.push({ level: 'error', path: `resolvers[${index}].name`, message: '解析器名称不能为空' })
+    if (resolver.nameservers.length === 0) issues.push({ level: 'warning', path: `resolvers[${index}].nameservers`, message: '解析器没有配置 nameserver' })
+  })
+
   if (config.api.enabled && !config.api.address.trim()) {
     issues.push({ level: 'error', path: 'api.address', message: 'API 已启用，但没有监听地址' })
   }
@@ -221,6 +243,9 @@ function toNativeConfig(config: GostConfig): NativeRecord {
         })),
       }],
     })),
+    bypasses: config.bypasses.map((rule) => ({ name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
+    admissions: config.admissions.map((rule) => ({ name: rule.name, whitelist: rule.whitelist, matchers: rule.matchers })),
+    resolvers: config.resolvers.map((resolver) => ({ name: resolver.name, nameservers: resolver.nameservers.map((addr) => ({ addr })), prefer: resolver.prefer })),
     log: config.log,
   }
 
@@ -279,6 +304,38 @@ function fromNativeChain(value: unknown, index: number): ChainConfig {
         latency: 0,
       }
     }),
+  }
+}
+
+function validateRules(issues: ValidationIssue[], rules: Array<{ name: string; matchers: string[] }>, section: string) {
+  const names = new Set<string>()
+  rules.forEach((rule, index) => {
+    if (!rule.name.trim()) issues.push({ level: 'error', path: `${section}[${index}].name`, message: '规则名称不能为空' })
+    if (names.has(rule.name)) issues.push({ level: 'error', path: `${section}[${index}].name`, message: `规则名称重复：${rule.name}` })
+    names.add(rule.name)
+    if (rule.matchers.length === 0) issues.push({ level: 'warning', path: `${section}[${index}].matchers`, message: '规则没有匹配项' })
+  })
+}
+
+function fromNativeRule<T extends BypassRule | AdmissionRule>(value: unknown, index: number, prefix: string): T {
+  const rule = asRecord(value)
+  return {
+    name: asString(rule.name, `${prefix}-${index + 1}`),
+    whitelist: rule.whitelist === true,
+    matchers: Array.isArray(rule.matchers) ? rule.matchers.filter((item): item is string => typeof item === 'string') : [],
+  } as T
+}
+
+function fromNativeResolver(value: unknown, index: number): ResolverRule {
+  const resolver = asRecord(value)
+  const nameservers = Array.isArray(resolver.nameservers) ? resolver.nameservers.map((item) => {
+    if (typeof item === 'string') return item
+    return asString(asRecord(item).addr, '')
+  }).filter(Boolean) : []
+  return {
+    name: asString(resolver.name, `resolver-${index + 1}`),
+    nameservers,
+    prefer: asString(resolver.prefer, 'ipv4') as ResolverRule['prefer'],
   }
 }
 

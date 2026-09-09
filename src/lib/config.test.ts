@@ -19,6 +19,9 @@ describe('GOST config adapter', () => {
     expect(restored.services[1]?.chain).toBe('relay-east')
     expect(restored.chains[1]?.nodes[0]?.addr).toBe('198.51.100.12:443')
     expect(restored.metrics.enabled).toBe(true)
+    expect(restored.bypasses[0]?.matchers).toContain('localhost')
+    expect(restored.admissions[0]?.whitelist).toBe(true)
+    expect(restored.resolvers[0]?.nameservers[0]).toBe('udp://1.1.1.1:53')
   })
 
   it('keeps root-level fields unknown to the friendly editor', () => {
