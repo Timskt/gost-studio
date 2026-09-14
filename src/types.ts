@@ -5,13 +5,13 @@ export interface AuthConfig {
   password: string
 }
 
+/** One GOST chain node: the dialer opens the transport, the connector speaks the protocol. */
 export interface NodeConfig {
   name: string
   addr: string
   connector: string
   dialer: string
-  health: 'healthy' | 'degraded' | 'offline'
-  latency: number
+  /** Canvas coordinates, persisted so a hand-arranged chain keeps its layout. */
   position?: { x: number; y: number }
 }
 
@@ -24,17 +24,18 @@ export interface ChainConfig {
 
 export interface ServiceConfig {
   name: string
-  type: 'http' | 'socks5' | 'tcp' | 'udp' | 'auto'
-  listener: 'tcp' | 'udp' | 'tls' | 'ws' | 'http2' | 'quic'
+  /** GOST handler type. Free-form: upstream registers far more handlers than we can enumerate. */
+  type: string
+  /** GOST listener type. Free-form for the same reason. */
+  listener: string
   address: string
   chain: string
   auth: boolean
   authUsername: string
   authPassword: string
+  /** Name of an auther component, an alternative to inline credentials. */
+  auther: string
   enabled: boolean
-  requests: number
-  traffic: string
-  status: 'running' | 'stopped' | 'warning'
 }
 
 export interface BypassRule {
@@ -76,6 +77,24 @@ export interface RecorderRule {
   target: string
 }
 
+export interface LogConfig {
+  level: 'error' | 'warn' | 'info' | 'debug' | 'trace'
+  format: 'text' | 'json'
+}
+
+export interface ListenerToggle {
+  enabled: boolean
+  address: string
+}
+
+export interface ApiConfig extends ListenerToggle {
+  pathPrefix: string
+}
+
+export interface MetricsConfig extends ListenerToggle {
+  path: string
+}
+
 export interface GostConfig {
   services: ServiceConfig[]
   chains: ChainConfig[]
@@ -86,20 +105,10 @@ export interface GostConfig {
   hosts: HostGroup[]
   limiters: LimiterRule[]
   recorders: RecorderRule[]
-  log: {
-    level: 'error' | 'warn' | 'info' | 'debug' | 'trace'
-    format: 'text' | 'json'
-  }
-  api: {
-    enabled: boolean
-    address: string
-    pathPrefix: string
-  }
-  metrics: {
-    enabled: boolean
-    address: string
-    path: string
-  }
+  log: LogConfig
+  api: ApiConfig
+  metrics: MetricsConfig
+  /** Verbatim parse of the source YAML, so fields the editor does not model survive a save. */
   raw?: Record<string, unknown>
 }
 
@@ -123,13 +132,25 @@ export interface RuntimeUpdateState {
   error?: string
 }
 
+export type RuntimeStatus = 'running' | 'stopped' | 'starting' | 'stopping' | 'error'
+
+export type DebugLevel = 'off' | 'debug' | 'trace'
+
 export interface RuntimeState {
-  status: 'running' | 'stopped' | 'starting' | 'stopping' | 'error'
+  status: RuntimeStatus
+  /** Reported by `gost -V`; empty until a binary has been probed. */
   version: string
-  source: string
   binaryPath: string
+  configPath: string
   pid?: number
   startedAt?: string
+  lastError?: string
+}
+
+export interface RuntimeLaunchOptions {
+  binaryPath: string
+  configPath: string
+  debugLevel: DebugLevel
 }
 
 export interface ValidationIssue {
